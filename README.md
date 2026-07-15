@@ -89,6 +89,7 @@ README documents what's exposed today.
 | `glpi_link_tickets` | link / duplicate / parent |
 | `glpi_add_ticket_validation` | Request a validation |
 | `glpi_set_validation_status` | Approve (2) or refuse (3) |
+| `glpi_upload_document` | Upload a local file as a Document; `ticket_id` attaches it in the same call |
 | `glpi_attach_document_to_ticket` | Link an uploaded document to a ticket |
 
 ### Problems & Changes

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`glpi_upload_document`**: upload a local file as a GLPI Document via
+  multipart `POST /Document` (`uploadManifest` + `filename[0]`), with an
+  optional `ticket_id` that links the document to the ticket in the same
+  call. The link is declared inside the manifest (`itemtype`/`items_id`) so
+  it also works for restricted profiles (e.g. Self-Service requesters) that
+  cannot `POST Document_Item` directly. MIME type is derived from the file
+  extension.
+- `form` option in the HTTP layer (`GlpiHttp.request`) for multipart bodies:
+  the JSON `Content-Type` is omitted so `fetch` can set the boundary. Note
+  the manifest must be appended as a plain string field — parts carrying a
+  filename land in PHP's `$_FILES` and GLPI reads the manifest from `$_POST`.
+- Tests: multipart header handling, manifest/file pair building, manifest
+  item linking, and default document naming (`test/upload.test.ts`).
+
 ## 3.2.0 — 2026-07-04
 
 ### Added
