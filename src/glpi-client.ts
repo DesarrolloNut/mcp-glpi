@@ -1029,6 +1029,52 @@ export class GlpiClient {
   // ---- DOCUMENT ATTACHMENT ----
 
   /**
+   * Upload a file as a GLPI Document (multipart POST /Document).
+   * GLPI matches the file part against the manifest's `_filename` entry,
+   * so `filename` must be identical in both parts.
+   *
+   * To link the document to an item in the same call, pass `itemtype` +
+   * `items_id` — GLPI creates the Document_Item itself. This also works for
+   * restricted profiles (e.g. Self-Service ticket requesters) that are not
+   * allowed to POST Document_Item directly.
+   */
+  async uploadDocument(options: {
+    /** File name as stored in GLPI (e.g. "screenshot.png"). */
+    filename: string;
+    /** Raw file content. */
+    data: Uint8Array;
+    /** Document title (defaults to `filename`). */
+    name?: string;
+    mimeType?: string;
+    /** Item to link the document to on creation (e.g. "Ticket"). */
+    itemtype?: string;
+    items_id?: number;
+  }): Promise<{ id: number }> {
+    const { filename, data, name, mimeType, itemtype, items_id } = options;
+    const manifest = JSON.stringify({
+      input: {
+        name: name ?? filename,
+        _filename: [filename],
+        ...(itemtype && items_id ? { itemtype, items_id } : {}),
+      },
+    });
+    const form = new FormData();
+    // Append as a plain string field: parts with a filename land in PHP's
+    // $_FILES, and GLPI reads the manifest from $_POST.
+    form.append('uploadManifest', manifest);
+    form.append(
+      'filename[0]',
+      new Blob([data], { type: mimeType ?? 'application/octet-stream' }),
+      filename
+    );
+    const { data: res } = await this.http.request<{ id: number } | Array<{ id: number }>>(
+      'Document',
+      { method: 'POST', form }
+    );
+    return Array.isArray(res) ? res[0] : res;
+  }
+
+  /**
    * Attach an existing document (by id) to a ticket via Document_Item.
    * Use this after uploading the file via /Document.
    */

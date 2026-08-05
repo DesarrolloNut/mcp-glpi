@@ -59,6 +59,8 @@ export interface RequestOptions {
   query?: URLSearchParams | Record<string, string | number | boolean | undefined>;
   /** JSON body, sent as `Content-Type: application/json`. */
   json?: unknown;
+  /** Multipart body (file uploads). Content-Type is set by fetch with the boundary. */
+  form?: FormData;
   /** Skip auto session init/reauth (used internally for initSession/killSession). */
   noSession?: boolean;
   /** Override auth header (used by initSession). */
@@ -174,9 +176,9 @@ export class GlpiHttp {
 
     if (!options.noSession) await this.ensureSession();
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+    const headers: Record<string, string> = {};
+    // For multipart, fetch sets Content-Type itself (with the boundary).
+    if (!options.form) headers['Content-Type'] = 'application/json';
     if (this.config.appToken) headers['App-Token'] = this.config.appToken;
     if (this.sessionToken && !options.authHeader) {
       headers['Session-Token'] = this.sessionToken;
@@ -187,7 +189,8 @@ export class GlpiHttp {
     const fullUrl = `${this.config.url}/apirest.php/${path}${queryString ? '?' + queryString : ''}`;
 
     const init: RequestInit = { method, headers };
-    if (options.json !== undefined) init.body = JSON.stringify(options.json);
+    if (options.form) init.body = options.form;
+    else if (options.json !== undefined) init.body = JSON.stringify(options.json);
 
     const maxRetries = this.config.maxRetries ?? 2;
     const baseDelay = this.config.retryBaseDelayMs ?? 300;

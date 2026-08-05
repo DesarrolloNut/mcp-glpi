@@ -25,6 +25,8 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import { readFile } from 'node:fs/promises';
+import { basename, extname } from 'node:path';
 import { z } from 'zod';
 import { GlpiClient, GlpiConfig, ListOptions } from './glpi-client.js';
 import { GlpiError } from './http.js';
@@ -259,6 +261,20 @@ const LIST_TOOL_COMMON_PROPS = {
   sort: { type: 'number', description: 'Sort by field id (search option id)' },
   order: { type: 'string', enum: ['ASC', 'DESC'] },
   expand_dropdowns: { type: 'boolean', description: 'Resolve FK ids to labels (default true)' },
+};
+
+/** MIME types for glpi_upload_document, keyed by lowercase file extension. */
+const UPLOAD_MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.log': 'text/plain',
+  '.csv': 'text/csv',
+  '.zip': 'application/zip',
 };
 
 // ---------------------------------------------------------------------------
@@ -530,6 +546,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           comment_validation: { type: 'string' },
         },
         required: ['validation_id', 'status'],
+      },
+    },
+    {
+      name: 'glpi_upload_document',
+      description:
+        'Upload a local file (by path) as a GLPI Document. If ticket_id is set, the document is also attached to that ticket.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          file_path: {
+            type: 'string',
+            description: 'Path of the file on the machine running this server',
+          },
+          name: { type: 'string', description: 'Document title (default: file name)' },
+          ticket_id: {
+            type: 'number',
+            description: 'If set, attach the uploaded document to this ticket',
+          },
+        },
+        required: ['file_path'],
       },
     },
     {
@@ -1318,6 +1354,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           args.comment_validation as string
         );
         return text({ success: true, validation_id, status_label: VALIDATION_STATUS[status] });
+      }
+
+      case 'glpi_upload_document': {
+        const filePath = args.file_path as string;
+        if (!filePath) throw new McpError(ErrorCode.InvalidParams, 'file_path required');
+        let data: Uint8Array;
+        try {
+          data = await readFile(filePath);
+        } catch (err) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `cannot read file "${filePath}": ${err instanceof Error ? err.message : err}`
+          );
+        }
+        const filename = basename(filePath);
+        const ticket_id = args.ticket_id as number | undefined;
+        // Linking via the manifest (itemtype/items_id) lets GLPI create the
+        // Document_Item itself, which also works for restricted profiles that
+        // cannot POST Document_Item directly.
+        const document = await client.uploadDocument({
+          filename,
+          data,
+          name: args.name as string | undefined,
+          mimeType: UPLOAD_MIME_TYPES[extname(filename).toLowerCase()],
+          ...(ticket_id ? { itemtype: 'Ticket', items_id: ticket_id } : {}),
+        });
+        return text({ success: true, document_id: document.id, ...(ticket_id ? { ticket_id } : {}) });
       }
 
       case 'glpi_attach_document_to_ticket': {
