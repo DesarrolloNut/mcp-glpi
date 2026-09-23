@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.4.0 — 2026-09-23
+
+### Added
+
+- **Enterprise Security Hardening**:
+  - **Upload Path Sandbox (`src/path-security.ts`)**: restricts `glpi_upload_document` to `GLPI_ALLOWED_UPLOAD_DIR` (or local working directory). Canonical `realpath` resolution prevents path traversal (`../`) and symlink directory escapes. Strict blocklist for hidden files (`.env`, `.git`) and sensitive credentials (SSH keys, AWS credentials), plus an allowlist of permitted business file extensions (`.pdf`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.txt`, `.csv`, `.xlsx`, `.docx`, `.zip`).
+  - **Generic Itemtype Sanitization (`src/itemtype-security.ts`)**: strict validation (`/^[a-zA-Z0-9_]{1,100}$/`) on user-supplied entity/itemtype inputs preventing endpoint injection and directory traversal attacks.
+  - **HTTPS Transport Enforcement (`src/config.ts`)**: mandates `https://` for `GLPI_URL` to protect authentication tokens and credentials in transit. Requires explicit `GLPI_ALLOW_HTTP=true` for unencrypted local development/testing.
+  - **Mutation Input Validation (`src/schemas.ts`)**: strict Zod validation schemas applied to all mutating operations (tickets, followups, tasks, solutions, assignments, document links, validations) with bounded string lengths and type coercion.
+- **Native HTTP/SSE Remote Server (`src/sse-server.ts`)**:
+  - Dual-transport architecture: automatic HTTP/SSE listener when `PORT` or `MCP_TRANSPORT=sse` is configured, with zero breaking changes to existing local `stdio` usage.
+  - Built exclusively with native Node.js (`node:http`) without third-party web frameworks, adhering to native code standards.
+  - Endpoints: `GET /sse`, `GET /mcp`, and `GET /` for SSE connection negotiation; `POST /messages` for JSON-RPC dispatch; `GET /health` for container and reverse-proxy health checks.
+  - Perimeter authentication: optional `MCP_AUTH_TOKEN` protecting SSE and message endpoints via `Authorization: Bearer <token>` or `?token=<token>`.
+  - Full CORS headers support for browser-based and remote AI web interfaces (LibreChat, Open WebUI, Dify, custom agent dashboards).
+- **Production Containerization**:
+  - Multi-stage `Dockerfile` (`builder` and `runner` using `node:22-alpine`).
+  - Runs under unprivileged non-root user (`USER node`).
+  - Dedicated `/app/uploads` sandbox directory.
+  - Built-in `HEALTHCHECK` probe targeting `http://127.0.0.1:3000/health`.
+  - Comprehensive `.dockerignore` for minimal, secure image footprints.
+- **Automated Security & Transport Test Suite**:
+  - 4 new test suites: `test/security-path.test.ts`, `test/security-itemtype.test.ts`, `test/security-config.test.ts`, and `test/security-sse.test.ts`. Total test coverage increased to 35 passing tests.
+
 ## 3.3.0 — 2026-08-05
 
 ### Added

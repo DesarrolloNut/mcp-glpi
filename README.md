@@ -1,28 +1,29 @@
-# MCP Server for GLPI v3
+# MCP Server for GLPI (v3.4)
 
 A Model Context Protocol (MCP) server that exposes GLPI (IT Service
-Management) to AI assistants like Claude.
+Management) to AI assistants like Claude, LibreChat, Open WebUI, and Dify.
 
-v3 is a foundations-and-coverage overhaul on top of v2. See
-[CHANGELOG.md](./CHANGELOG.md) for the full list of changes; the rest of this
-README documents what's exposed today.
+Supports both **Local CLI / Stdio** and **Remote HTTP / SSE** deployment modes with enterprise-grade security hardening.
 
-## What's in v3
+See [CHANGELOG.md](./CHANGELOG.md) for detailed version history.
 
-- **Solid foundations**: unified HTTP layer with auto re-authentication on 401,
-  structured errors, retry on 5xx.
-- **Real search**: multi-criteria with `AND` / `OR` / `AND NOT` / `OR NOT`,
-  `forcedisplay`, pagination, `fetch_all`, dedicated count probe.
-- **Dynamic field mapping**: `/listSearchOptions/{itemtype}` is cached so
-  `field_id` ↔ name translations stay valid across GLPI versions.
-- **High-level reporting**: `glpi_search_tickets` accepts friendly params,
-  `glpi_tickets_stats_by` ventilates counts by status / category / technician /
-  entity / month.
-- **Full ITIL coverage**: timeline (followups + tasks + solutions +
-  validations), validations request/approve, ticket linking, document
-  attachment, satisfaction, overdue (SLA) tickets.
-- **Resolved foreign keys by default**: detail views return `users_id_tech: 42`
-  *and* the resolved name, so the LLM doesn't have to guess.
+## What's New in v3.4
+
+- **Enterprise Security Hardening**:
+  - Sandboxed file uploads (`GLPI_ALLOWED_UPLOAD_DIR`) with directory traversal (`../`) and symlink escape defenses.
+  - Alphanumeric sanitization on dynamic itemtypes.
+  - Mandatory HTTPS for GLPI API communication (`GLPI_ALLOW_HTTP=true` for local test bypass).
+  - Strict Zod validation schemas for all write mutations and input boundaries.
+- **Native Remote HTTP/SSE Transport**:
+  - Exposes standard Server-Sent Events endpoints (`/sse`, `/mcp`, `/`) and message dispatcher (`/messages`).
+  - Zero external web framework dependencies (built purely with native Node.js `node:http`).
+  - Perimeter Bearer token authentication (`MCP_AUTH_TOKEN`) via headers or URL query parameter.
+  - Built-in `/health` status endpoint for container orchestrators.
+- **Cloud & Container Ready (Easypanel / Docker)**:
+  - Multi-stage `Dockerfile` (`node:22-alpine`) running under an unprivileged `node` user.
+  - Native Docker and Easypanel healthchecks.
+- **Full ITIL & ITSM Tool Suite (84 Tools)**:
+  - Tickets, problems, changes, assets (computers, network equipment, printers, monitors, software), documents, knowledge base, users, groups, and advanced reporting.
 
 ## Configuration
 
@@ -92,6 +93,41 @@ Connect using Server-Sent Events (SSE):
   }
 }
 ```
+
+## Deployment on Easypanel / Docker
+
+This server is packaged with a multi-stage Docker build ready to run on [Easypanel](https://easypanel.io/) or any Docker container orchestrator.
+
+### 1. Create Service in Easypanel
+1. Inside your project, click **+ Service** → **App**.
+2. **Source**: Select **GitHub** and connect `DesarrolloNut/mcp-glpi` (or your repository fork).
+3. **Branch**: `main`.
+4. **Build Type**: `Dockerfile` (automatically detected).
+
+### 2. Configure Environment Variables
+In the **Environment** tab, set the following variables:
+
+| Variable | Value Example | Notes |
+|---|---|---|
+| `GLPI_URL` | `https://glpi.nutriciosa.local` | GLPI instance URL (requires `https://` or `GLPI_ALLOW_HTTP=true`) |
+| `GLPI_APP_TOKEN` | `your_app_token` | GLPI Application Token |
+| `GLPI_USER_TOKEN` | `your_user_token` | GLPI User API Token (or configure `GLPI_USERNAME` + `GLPI_PASSWORD`) |
+| `PORT` | `3000` | Port for the HTTP/SSE server |
+| `MCP_TRANSPORT` | `sse` | Activates SSE transport mode |
+| `MCP_AUTH_TOKEN` | `sk-mcp-glpi-secret...` | (Recommended) Secret token required by MCP clients to connect |
+| `GLPI_ALLOW_HTTP` | `true` | (Optional) Set to `true` if your GLPI backend is on local unencrypted HTTP |
+
+### 3. Domains & Port Forwarding
+In the **Domains** tab:
+- Add your domain: e.g. `mcp-glpi.nutriciosa.local`.
+- Ensure the destination port is set to **`3000`**.
+
+### 4. Healthcheck & Monitoring
+Easypanel automatically monitors the container via the Dockerfile's built-in probe:
+- **Healthcheck URL**: `http://127.0.0.1:3000/health`
+- Returns: `{"status":"ok","service":"mcp-glpi","uptime":...,"activeSessions":...}`
+
+---
 
 ## Tool catalogue
 
@@ -228,7 +264,7 @@ cover provisioning.
 ## Development
 
 ```bash
-git clone https://github.com/GMS64260/mcp-glpi.git
+git clone https://github.com/DesarrolloNut/mcp-glpi.git
 cd mcp-glpi
 npm install
 npm run build
@@ -241,6 +277,33 @@ Run locally:
 export GLPI_URL="https://glpi.example.com"
 export GLPI_USER_TOKEN="..."
 npm start
+```
+
+## Troubleshooting / FAQ
+
+### "El servidor MCP respondió exitosamente pero no expone ninguna herramienta actualmente (tools/list retornó vacío)"
+Si al conectar tu cliente MCP (por ejemplo, desde un panel web de agentes IA) recibes este mensaje:
+
+1. **Reconstruye el despliegue en Easypanel:**
+   - Asegúrate de que los cambios más recientes del repositorio hayan sido enviados a GitHub (`git push`).
+   - En Easypanel, ve a tu servicio y pulsa **Deploy / Redéploy** para que reconstruya la imagen Docker con el código y handlers actualizados.
+2. **Verifica la URL del Endpoint:**
+   - La mayoría de clientes esperan la ruta completa de Server-Sent Events: `http://mcp-glpi.nutriciosa.local/sse`.
+   - Nuestro servidor también responde en la raíz `http://mcp-glpi.nutriciosa.local` y en `/mcp`. Si tu cliente falló en la raíz, prueba especificando `/sse`.
+3. **Verifica el estado del servicio (`/health`):**
+   - Abre en tu navegador o terminal: `http://mcp-glpi.nutriciosa.local/health`.
+   - Debes obtener una respuesta JSON con `{"status":"ok","service":"mcp-glpi", ...}`. Si obtienes error de conexión o 404, el contenedor no está activo o la configuración de dominio en Easypanel no está apuntando al puerto `3000`.
+4. **Headers de Autenticación (`MCP_AUTH_TOKEN`):**
+   - Si configuraste `MCP_AUTH_TOKEN` en las variables de entorno, asegúrate de proveer el JSON de autenticación en el cliente:
+     ```json
+     {"Authorization": "Bearer tu_token_secreto"}
+     ```
+   - Si el token no coincide, las peticiones a `/sse` y `/messages` retornarán `401 Unauthorized`.
+
+### "GLPI_URL must use HTTPS"
+Por motivos de seguridad y protección de credenciales, el servidor bloquea conexiones `http://` por defecto. Si tu entorno de GLPI es local y no cuenta con certificado SSL, añade la variable de entorno:
+```bash
+GLPI_ALLOW_HTTP=true
 ```
 
 ## License

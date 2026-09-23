@@ -1824,7 +1824,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 export function createMcpServer(glpiClient: GlpiClient): Server {
   client = glpiClient;
   const server = new Server(
-    { name: 'mcp-glpi', version: '3.3.0' },
+    { name: 'mcp-glpi', version: '3.4.0' },
     { capabilities: { tools: {}, resources: {} } }
   );
   registerHandlers(server);
@@ -1877,7 +1877,7 @@ async function main() {
       const server = createMcpServer(client);
       const transport = new StdioServerTransport();
       await server.connect(transport);
-      console.error('MCP GLPI Server v3.3.0 running on stdio');
+      console.error('MCP GLPI Server v3.4.0 running on stdio');
 
       const shutdown = async () => {
         try {
