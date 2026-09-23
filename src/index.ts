@@ -248,7 +248,9 @@ function annotate<T extends { name: string }>(tool: T): T & { annotations: ToolA
 }
 
 function registerHandlers(server: Server) {
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    console.error(`[MCP] Request 'tools/list' received -> responding with 84 tools`);
+    return {
   tools: [
     // ============== READ — TICKETS ==============
     {
@@ -1037,7 +1039,8 @@ function registerHandlers(server: Server) {
       },
     },
   ].map(annotate),
-}));
+    };
+  });
 
 // ---------------------------------------------------------------------------
 // Tool dispatch
@@ -1046,6 +1049,7 @@ function registerHandlers(server: Server) {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: argsRaw } = request.params;
   const args = (argsRaw ?? {}) as Record<string, unknown>;
+  console.error(`[MCP] Request 'tools/call' received -> tool: ${name}`);
 
   try {
     switch (name) {
@@ -1840,22 +1844,39 @@ async function main() {
     const config = getConfig();
     client = new GlpiClient(config);
 
+    const isSse = !!process.env.PORT || process.env.MCP_TRANSPORT === 'sse';
+    const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+    console.error('====================================================');
+    console.error('🚀 MCP GLPI Server v3.4.0');
+    console.error(`📡 Mode: ${isSse ? `HTTP/SSE on port ${port}` : 'stdio'}`);
+    console.error(`🔗 GLPI URL: ${config.url}`);
+    console.error(`🔒 HTTPS Enforcement: ${config.url.startsWith('http://') ? 'DISABLED (Insecure HTTP permitted via GLPI_ALLOW_HTTP)' : 'ACTIVE (HTTPS required)'}`);
+    console.error(`🔑 Authentication: ${config.userToken ? 'User Token configured' : 'Username/Password configured'}`);
+    if (config.appToken) console.error('🏷️  App Token: Configured');
+    console.error(`🛡️  MCP Auth Token: ${process.env.MCP_AUTH_TOKEN ? 'PROTECTED (Bearer token configured)' : 'OPEN (No MCP_AUTH_TOKEN configured)'}`);
+    console.error('----------------------------------------------------');
+    console.error(`⏳ Connecting to GLPI at ${config.url}...`);
+
     // Try to open the session eagerly, but don't die if GLPI is momentarily
     // unreachable: the HTTP layer re-authenticates lazily on first request.
     try {
-      await client.initSession();
-      console.error('GLPI session initialized');
+      const sessionToken = await client.initSession();
+      console.error('✅ [GLPI CONNECTED] Successfully authenticated to GLPI!');
+      console.error(`   Session Token: ${sessionToken ? sessionToken.slice(0, 8) + '...' : 'active'}`);
     } catch (error) {
-      console.error(
-        `Warning: could not reach GLPI at startup (${error instanceof Error ? error.message : error}). ` +
-        'The session will be established on the first request.'
-      );
+      console.error('❌ [GLPI CONNECTION FAILED]');
+      console.error(`   Error: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof GlpiError) {
+        console.error(`   HTTP Status: ${error.status}`);
+        if (error.glpiCode) console.error(`   GLPI Code: ${error.glpiCode}`);
+        if (error.glpiMessage) console.error(`   GLPI Message: ${error.glpiMessage}`);
+      }
+      console.error('   ⚠️ Note: The server will remain up, and will retry authentication when requests are executed.');
     }
-
-    const isSse = !!process.env.PORT || process.env.MCP_TRANSPORT === 'sse';
+    console.error('====================================================');
 
     if (isSse) {
-      const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
       const sseServer = createHttpSseServer(client, () => createMcpServer(client), {
         port,
         authToken: process.env.MCP_AUTH_TOKEN,

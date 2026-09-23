@@ -50,47 +50,89 @@ export function createHttpSseServer(
 
     const hostHeader = req.headers.host ?? 'localhost';
     const parsedUrl = new URL(req.url ?? '/', `http://${hostHeader}`);
-    const pathname = parsedUrl.pathname;
+    const rawPath = parsedUrl.pathname;
+    const pathname = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
+    const remoteIp = req.socket.remoteAddress ?? 'unknown';
+
+    console.error(`[HTTP] ${req.method} ${pathname} from ${remoteIp}`);
 
     // 1. Healthcheck endpoint for Easypanel / Traefik / Docker
     if (req.method === 'GET' && pathname === '/health') {
+      const isGlpiConnected = !!client?.http?.session;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
           status: 'ok',
           service: 'mcp-glpi',
+          version: '3.4.0',
           uptime: Math.floor(process.uptime()),
           activeSessions: transports.size,
+          glpi: {
+            url: client?.http?.config?.url ?? 'not-configured',
+            connected: isGlpiConnected,
+            sessionActive: isGlpiConnected,
+          },
           timestamp: new Date().toISOString(),
         })
       );
       return;
     }
 
-    // 2. Authentication check for MCP endpoints
+    // 2. Browser informational root page (only if browser explicitly requests HTML and path is /)
+    const acceptHeader = req.headers.accept ?? '';
+    if (req.method === 'GET' && pathname === '/' && acceptHeader.includes('text/html') && !acceptHeader.includes('text/event-stream')) {
+      const isGlpiConnected = !!client?.http?.session;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          service: 'mcp-glpi',
+          version: '3.4.0',
+          status: 'running',
+          transport: 'SSE',
+          endpoints: {
+            sse: '/sse',
+            health: '/health',
+            messages: '/messages',
+          },
+          glpi: {
+            url: client?.http?.config?.url ?? 'not-configured',
+            connected: isGlpiConnected,
+          },
+          info: 'Connect your MCP client to /sse (Server-Sent Events)',
+        }, null, 2)
+      );
+      return;
+    }
+
+    // 3. Authentication check for MCP endpoints
     if (!isAuthorized(req, authToken)) {
+      console.error(`[AUTH] 401 Unauthorized for ${req.method} ${pathname} from ${remoteIp}`);
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized: Invalid or missing token.' }));
       return;
     }
 
-    // 3. Establish SSE stream (GET /sse, GET /mcp or root GET /)
+    // 4. Establish SSE stream (GET /sse, GET /mcp or root GET /)
     if (req.method === 'GET' && (pathname === '/sse' || pathname === '/mcp' || pathname === '/')) {
       try {
+        console.error(`[SSE] Establishing new SSE stream from ${remoteIp} (endpoint: ${pathname})`);
         const transport = new SSEServerTransport('/messages', res);
         const sessionId = transport.sessionId;
         transports.set(sessionId, transport);
 
+        console.error(`[SSE] Session initialized: sessionId=${sessionId}`);
+
         const mcpServer = createServerInstance(client);
 
         transport.onclose = () => {
+          console.error(`[SSE] Session closed: sessionId=${sessionId}`);
           transports.delete(sessionId);
           mcpServer.close().catch(() => {});
         };
 
         await mcpServer.connect(transport);
       } catch (err) {
-        console.error('Error establishing SSE stream:', err);
+        console.error('[SSE ERROR] Failed establishing stream:', err);
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Failed to establish SSE stream' }));
@@ -99,10 +141,11 @@ export function createHttpSseServer(
       return;
     }
 
-    // 4. Client messages endpoint (POST /messages)
+    // 5. Client messages endpoint (POST /messages)
     if (req.method === 'POST' && pathname === '/messages') {
       const sessionId = parsedUrl.searchParams.get('sessionId');
       if (!sessionId) {
+        console.error(`[HTTP] 400 Missing sessionId on POST /messages from ${remoteIp}`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing sessionId query parameter' }));
         return;
@@ -110,16 +153,19 @@ export function createHttpSseServer(
 
       const transport = transports.get(sessionId);
       if (!transport) {
+        console.error(`[HTTP] 404 Session not found: ${sessionId}`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Session not found: ${sessionId}` }));
         return;
       }
 
+      console.error(`[HTTP] POST /messages received for sessionId=${sessionId}`);
       await transport.handlePostMessage(req, res);
       return;
     }
 
     // 404 for unknown endpoints
+    console.error(`[HTTP] 404 Not Found: ${req.method} ${pathname}`);
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: `Not found: ${req.method} ${pathname}` }));
   });
@@ -130,7 +176,7 @@ export function createHttpSseServer(
       new Promise<void>((resolve) => {
         httpServer.listen(port, host, () => {
           console.error(
-            `MCP GLPI Server running over HTTP/SSE on http://${host}:${port} (endpoints: /sse, /mcp, /health)`
+            `🚀 MCP GLPI Server listening on http://${host}:${port} (endpoints: /sse, /mcp, /health)`
           );
           resolve();
         });
