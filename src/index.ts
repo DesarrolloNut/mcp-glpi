@@ -247,11 +247,7 @@ function annotate<T extends { name: string }>(tool: T): T & { annotations: ToolA
   return { ...tool, annotations: toolAnnotations(tool.name) };
 }
 
-function registerHandlers(server: Server) {
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    console.error(`[MCP] Request 'tools/list' received -> responding with 84 tools`);
-    return {
-  tools: [
+export const ALL_TOOLS = [
     // ============== READ — TICKETS ==============
     {
       name: 'glpi_list_tickets',
@@ -1038,19 +1034,13 @@ function registerHandlers(server: Server) {
         required: ['itemtype', 'field', 'searchtype', 'value'],
       },
     },
-  ].map(annotate),
-    };
-  });
+  ].map(annotate);
 
 // ---------------------------------------------------------------------------
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: argsRaw } = request.params;
-  const args = (argsRaw ?? {}) as Record<string, unknown>;
-  console.error(`[MCP] Request 'tools/call' received -> tool: ${name}`);
-
+export async function executeTool(name: string, args: Record<string, unknown>) {
   try {
     switch (name) {
       // ==== TICKETS — read ====
@@ -1754,28 +1744,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       `Error executing ${name}: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-});
+}
 
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
 
-server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-  resources: [
-    { uri: 'glpi://tickets/open', name: 'Open Tickets', description: 'Tickets with status < 5', mimeType: 'application/json' },
-    { uri: 'glpi://tickets/recent', name: 'Recent Tickets', description: 'Most recent tickets', mimeType: 'application/json' },
-    { uri: 'glpi://problems/open', name: 'Open Problems', description: 'Open problems', mimeType: 'application/json' },
-    { uri: 'glpi://changes/pending', name: 'Pending Changes', description: 'Pending changes', mimeType: 'application/json' },
-    { uri: 'glpi://computers', name: 'Computers', description: 'Computers', mimeType: 'application/json' },
-    { uri: 'glpi://groups', name: 'Groups', description: 'Groups', mimeType: 'application/json' },
-    { uri: 'glpi://categories', name: 'Categories', description: 'ITIL categories', mimeType: 'application/json' },
-    { uri: 'glpi://stats/tickets', name: 'Ticket Statistics', description: 'Ticket counts', mimeType: 'application/json' },
-    { uri: 'glpi://stats/assets', name: 'Asset Statistics', description: 'Asset counts', mimeType: 'application/json' },
-  ],
-}));
+export const ALL_RESOURCES = [
+  { uri: 'glpi://tickets/open', name: 'Open Tickets', description: 'Tickets with status < 5', mimeType: 'application/json' },
+  { uri: 'glpi://tickets/recent', name: 'Recent Tickets', description: 'Most recent tickets', mimeType: 'application/json' },
+  { uri: 'glpi://problems/open', name: 'Open Problems', description: 'Open problems', mimeType: 'application/json' },
+  { uri: 'glpi://changes/pending', name: 'Pending Changes', description: 'Pending changes', mimeType: 'application/json' },
+  { uri: 'glpi://computers', name: 'Computers', description: 'Computers', mimeType: 'application/json' },
+  { uri: 'glpi://groups', name: 'Groups', description: 'Groups', mimeType: 'application/json' },
+  { uri: 'glpi://categories', name: 'Categories', description: 'ITIL categories', mimeType: 'application/json' },
+  { uri: 'glpi://stats/tickets', name: 'Ticket Statistics', description: 'Ticket counts', mimeType: 'application/json' },
+  { uri: 'glpi://stats/assets', name: 'Asset Statistics', description: 'Asset counts', mimeType: 'application/json' },
+];
 
-server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-  const { uri } = request.params;
+export async function executeResource(uri: string) {
   try {
     switch (uri) {
       case 'glpi://tickets/open': {
@@ -1822,7 +1809,128 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       `Error reading resource: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-});
+}
+
+function registerHandlers(server: Server) {
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    console.error(`[MCP] Request 'tools/list' received -> responding with ${ALL_TOOLS.length} tools`);
+    return { tools: ALL_TOOLS };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: argsRaw } = request.params;
+    const args = (argsRaw ?? {}) as Record<string, unknown>;
+    console.error(`[MCP] Request 'tools/call' received -> tool: ${name}`);
+    return executeTool(name, args);
+  });
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: ALL_RESOURCES,
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    return executeResource(request.params.uri);
+  });
+}
+
+export async function handleJsonRpcMessage(glpiClient: GlpiClient, message: any): Promise<any> {
+  client = glpiClient;
+  const id = message?.id ?? null;
+  const method = message?.method;
+  const params = message?.params ?? {};
+
+  console.error(`[MCP-HTTP] Handling JSON-RPC method '${method}' (id: ${id})`);
+
+  try {
+    switch (method) {
+      case 'initialize':
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            protocolVersion: '2024-11-05',
+            capabilities: {
+              tools: {},
+              resources: {},
+            },
+            serverInfo: {
+              name: 'mcp-glpi',
+              version: '3.4.0',
+            },
+          },
+        };
+
+      case 'notifications/initialized':
+        return null;
+
+      case 'ping':
+        return { jsonrpc: '2.0', id, result: {} };
+
+      case 'tools/list':
+        console.error(`[MCP-HTTP] Responding to tools/list with ${ALL_TOOLS.length} tools`);
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            tools: ALL_TOOLS,
+          },
+        };
+
+      case 'tools/call': {
+        const toolName = params.name;
+        const toolArgs = (params.arguments ?? {}) as Record<string, unknown>;
+        console.error(`[MCP-HTTP] Calling tool '${toolName}'`);
+        const result = await executeTool(toolName, toolArgs);
+        return {
+          jsonrpc: '2.0',
+          id,
+          result,
+        };
+      }
+
+      case 'resources/list':
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            resources: ALL_RESOURCES,
+          },
+        };
+
+      case 'resources/read': {
+        const uri = params.uri;
+        const result = await executeResource(uri);
+        return {
+          jsonrpc: '2.0',
+          id,
+          result,
+        };
+      }
+
+      default:
+        console.error(`[MCP-HTTP] Unknown method '${method}'`);
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32601,
+            message: `Method not found: ${method}`,
+          },
+        };
+    }
+  } catch (error) {
+    console.error(`[MCP-HTTP ERROR] in method '${method}':`, error);
+    const code = error instanceof McpError ? error.code : -32603;
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code,
+        message,
+      },
+    };
+  }
 }
 
 export function createMcpServer(glpiClient: GlpiClient): Server {
@@ -1880,6 +1988,7 @@ async function main() {
       const sseServer = createHttpSseServer(client, () => createMcpServer(client), {
         port,
         authToken: process.env.MCP_AUTH_TOKEN,
+        handleJsonRpc: (msg) => handleJsonRpcMessage(client, msg),
       });
       await sseServer.start();
 
@@ -1917,4 +2026,10 @@ async function main() {
   }
 }
 
-main();
+const isTesting =
+  process.env.NODE_TEST_CONTEXT !== undefined ||
+  process.argv.some((a) => a.includes('test') || a.includes('tsx'));
+
+if (!isTesting) {
+  main();
+}

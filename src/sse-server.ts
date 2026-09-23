@@ -7,6 +7,7 @@ export interface SseServerOptions {
   port: number;
   host?: string;
   authToken?: string;
+  handleJsonRpc?: (message: any) => Promise<any>;
 }
 
 /**
@@ -34,7 +35,7 @@ export function createHttpSseServer(
   createServerInstance: (client: GlpiClient) => Server,
   options: SseServerOptions
 ) {
-  const { port, host = '0.0.0.0', authToken } = options;
+  const { port, host = '0.0.0.0', authToken, handleJsonRpc } = options;
   const transports = new Map<string, SSEServerTransport>();
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -141,26 +142,75 @@ export function createHttpSseServer(
       return;
     }
 
-    // 5. Client messages endpoint (POST /messages)
-    if (req.method === 'POST' && pathname === '/messages') {
-      const sessionId = parsedUrl.searchParams.get('sessionId');
-      if (!sessionId) {
-        console.error(`[HTTP] 400 Missing sessionId on POST /messages from ${remoteIp}`);
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing sessionId query parameter' }));
+    // 5. Handling POST requests (SSE messages or direct JSON-RPC on any endpoint)
+    if (req.method === 'POST') {
+      const sessionId = parsedUrl.searchParams.get('sessionId') || (req.headers['mcp-session-id'] as string | undefined);
+
+      // A. If an active SSE transport session is targeted, delegate to SSEServerTransport
+      if (sessionId && transports.has(sessionId)) {
+        console.error(`[SSE] POST ${pathname} forwarded to session=${sessionId}`);
+        const transport = transports.get(sessionId)!;
+        await transport.handlePostMessage(req, res);
         return;
       }
 
-      const transport = transports.get(sessionId);
-      if (!transport) {
-        console.error(`[HTTP] 404 Session not found: ${sessionId}`);
+      // B. Direct JSON-RPC over HTTP POST (Stateless / Streamable MCP / Tool Discovery)
+      try {
+        let bodyStr = '';
+        for await (const chunk of req) {
+          bodyStr += chunk;
+        }
+
+        let body: any = null;
+        if (bodyStr.trim()) {
+          try {
+            body = JSON.parse(bodyStr);
+          } catch {
+            console.error(`[HTTP] 400 Invalid JSON received in POST ${pathname} from ${remoteIp}`);
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: Invalid JSON' } }));
+            return;
+          }
+        }
+
+        if (body && handleJsonRpc) {
+          if (Array.isArray(body)) {
+            // Batch JSON-RPC
+            console.error(`[HTTP] Batch JSON-RPC request (${body.length} items) from ${remoteIp}`);
+            const responses = await Promise.all(body.map((item) => handleJsonRpc(item)));
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(responses.filter((r) => r !== null)));
+            return;
+          }
+
+          console.error(`[HTTP] POST ${pathname} from ${remoteIp} -> JSON-RPC method '${body.method}'`);
+          const response = await handleJsonRpc(body);
+          if (response === null) {
+            res.writeHead(202, { 'Content-Type': 'application/json' }).end();
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(response));
+          return;
+        }
+
+        if (sessionId) {
+          console.error(`[HTTP] 404 Session not found: ${sessionId}`);
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Session not found: ${sessionId}` }));
+          return;
+        }
+
+        console.error(`[HTTP] 404 Not Found: POST ${pathname} (no body or handler)`);
         res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Session not found: ${sessionId}` }));
-        return;
+        res.end(JSON.stringify({ error: `Not found: POST ${pathname}` }));
+      } catch (err) {
+        console.error(`[HTTP ERROR] Processing POST ${pathname}:`, err);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal server error' } }));
+        }
       }
-
-      console.error(`[HTTP] POST /messages received for sessionId=${sessionId}`);
-      await transport.handlePostMessage(req, res);
       return;
     }
 
