@@ -74,8 +74,8 @@ export function createHttpSseServer(
       return;
     }
 
-    // 3. Establish SSE stream (GET /sse or GET /mcp)
-    if (req.method === 'GET' && (pathname === '/sse' || pathname === '/mcp')) {
+    // 3. Establish SSE stream (GET /sse, GET /mcp or root GET /)
+    if (req.method === 'GET' && (pathname === '/sse' || pathname === '/mcp' || pathname === '/')) {
       try {
         const transport = new SSEServerTransport('/messages', res);
         const sessionId = transport.sessionId;
