@@ -17,6 +17,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { createHttpSseServer } from './sse-server.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -192,11 +193,6 @@ function formatTicketSummary(t: any) {
 // Server setup
 // ---------------------------------------------------------------------------
 
-const server = new Server(
-  { name: 'mcp-glpi', version: '3.0.0' },
-  { capabilities: { tools: {}, resources: {} } }
-);
-
 let client: GlpiClient;
 
 // ---------------------------------------------------------------------------
@@ -251,7 +247,8 @@ function annotate<T extends { name: string }>(tool: T): T & { annotations: ToolA
   return { ...tool, annotations: toolAnnotations(tool.name) };
 }
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+function registerHandlers(server: Server) {
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     // ============== READ — TICKETS ==============
     {
@@ -1822,6 +1819,17 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     );
   }
 });
+}
+
+export function createMcpServer(glpiClient: GlpiClient): Server {
+  client = glpiClient;
+  const server = new Server(
+    { name: 'mcp-glpi', version: '3.3.0' },
+    { capabilities: { tools: {}, resources: {} } }
+  );
+  registerHandlers(server);
+  return server;
+}
 
 // ---------------------------------------------------------------------------
 // Main
@@ -1844,20 +1852,44 @@ async function main() {
       );
     }
 
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error('MCP GLPI Server v3.0 running on stdio');
+    const isSse = !!process.env.PORT || process.env.MCP_TRANSPORT === 'sse';
 
-    const shutdown = async () => {
-      try {
-        await client.killSession();
-      } catch (error) {
-        console.error('Warning: killSession failed during shutdown:', error instanceof Error ? error.message : error);
-      }
-      process.exit(0);
-    };
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+    if (isSse) {
+      const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+      const sseServer = createHttpSseServer(client, () => createMcpServer(client), {
+        port,
+        authToken: process.env.MCP_AUTH_TOKEN,
+      });
+      await sseServer.start();
+
+      const shutdown = async () => {
+        try {
+          await sseServer.close();
+          await client.killSession();
+        } catch (error) {
+          console.error('Warning during shutdown:', error instanceof Error ? error.message : error);
+        }
+        process.exit(0);
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    } else {
+      const server = createMcpServer(client);
+      const transport = new StdioServerTransport();
+      await server.connect(transport);
+      console.error('MCP GLPI Server v3.3.0 running on stdio');
+
+      const shutdown = async () => {
+        try {
+          await client.killSession();
+        } catch (error) {
+          console.error('Warning: killSession failed during shutdown:', error instanceof Error ? error.message : error);
+        }
+        process.exit(0);
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    }
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

@@ -37,6 +37,9 @@ README documents what's exposed today.
 | `GLPI_MAX_RETRIES` | no | Max retries on 5xx / 429 / network errors (default `2`) |
 | `GLPI_ALLOWED_UPLOAD_DIR` | no | Sandbox root path for `glpi_upload_document` (default: project working directory) |
 | `GLPI_ALLOW_HTTP` | no | Set to `true` to allow unencrypted `http://` URLs for local testing |
+| `PORT` | no | HTTP port to listen on for SSE transport (e.g. `3000`) |
+| `MCP_TRANSPORT` | no | Set to `sse` to enable HTTP/SSE server (enabled automatically when `PORT` is defined) |
+| `MCP_AUTH_TOKEN` | no | Secret Bearer token required for remote clients connecting via `/sse` |
 | `GLPI_DEBUG` | no | Set to any value to log HTTP retries/re-auth to stderr |
 
 \* either `GLPI_USER_TOKEN` or `GLPI_USERNAME`+`GLPI_PASSWORD` is required.
@@ -47,8 +50,11 @@ README documents what's exposed today.
 2. **File Upload Sandboxing (`glpi_upload_document`):** File uploads are restricted to `GLPI_ALLOWED_UPLOAD_DIR` (or working directory). Path traversal (`../`), symlink escapes, hidden files, sensitive credentials (`.env`, SSH keys), and unauthorized file extensions are strictly blocked.
 3. **Itemtype Sanitization:** Entity and object type arguments are strictly validated against `/^[a-zA-Z0-9_]+$/` to prevent path traversal and endpoint tampering.
 4. **Zod Strict Schemas:** All mutations and input parameters are validated against strict Zod schemas with defined boundaries.
+5. **Perimeter Authentication:** When running over HTTP/SSE, `MCP_AUTH_TOKEN` protects `/sse` from unauthorized internet access.
 
-### Claude Desktop / Claude Code
+### Client Configuration
+
+#### Local (Claude Desktop via Stdio)
 
 ```json
 {
@@ -60,6 +66,27 @@ README documents what's exposed today.
         "GLPI_URL": "https://glpi.example.com",
         "GLPI_APP_TOKEN": "...",
         "GLPI_USER_TOKEN": "..."
+      }
+    }
+  }
+}
+```
+
+#### Remote / Web (Easypanel, LibreChat, Open WebUI, Dify, Claude Code Remote via SSE)
+
+Connect using Server-Sent Events (SSE):
+
+* **SSE Endpoint:** `https://mcp-glpi.yourdomain.com/sse`
+* **Health Check:** `https://mcp-glpi.yourdomain.com/health`
+* **Authorization:** Header `Authorization: Bearer <MCP_AUTH_TOKEN>` (or query parameter `?token=<MCP_AUTH_TOKEN>`)
+
+```json
+{
+  "mcpServers": {
+    "glpi-remote": {
+      "url": "https://mcp-glpi.yourdomain.com/sse",
+      "headers": {
+        "Authorization": "Bearer your-secret-token"
       }
     }
   }
