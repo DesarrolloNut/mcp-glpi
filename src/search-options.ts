@@ -11,6 +11,7 @@
  */
 
 import { GlpiHttp } from './http.js';
+import { validateItemtype } from './itemtype-security.js';
 
 export interface SearchOption {
   id: number;
@@ -45,21 +46,22 @@ export class SearchOptionsCache {
   }
 
   async get(itemtype: string): Promise<SearchOptionsCatalogue> {
-    const cached = this.cache.get(itemtype);
+    const validItemtype = validateItemtype(itemtype);
+    const cached = this.cache.get(validItemtype);
     if (cached && Date.now() - cached.fetchedAt < this.ttlMs) return cached;
 
     const { data } = await this.http.request<Record<string, unknown>>(
-      `listSearchOptions/${itemtype}`
+      `listSearchOptions/${validItemtype}`
     );
 
-    const catalogue = this.parse(itemtype, data);
-    this.cache.set(itemtype, catalogue);
+    const catalogue = this.parse(validItemtype, data);
+    this.cache.set(validItemtype, catalogue);
     return catalogue;
   }
 
   /** Invalidate cache for one itemtype, or all if no argument. */
   invalidate(itemtype?: string) {
-    if (itemtype) this.cache.delete(itemtype);
+    if (itemtype) this.cache.delete(validateItemtype(itemtype));
     else this.cache.clear();
   }
 

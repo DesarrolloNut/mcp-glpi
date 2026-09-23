@@ -10,6 +10,7 @@
  */
 
 import { GlpiHttp } from './http.js';
+import { validateItemtype } from './itemtype-security.js';
 
 export type SearchType =
   | 'contains'
@@ -77,12 +78,13 @@ export class GlpiSearch {
     itemtype: string,
     options: SearchOptions = {}
   ): Promise<SearchResponse<T>> {
-    if (options.fetchAll) return this.fetchAll<T>(itemtype, options);
+    const validItemtype = validateItemtype(itemtype);
+    if (options.fetchAll) return this.fetchAll<T>(validItemtype, options);
 
     const start = options.start ?? 0;
     const limit = options.limit ?? DEFAULT_PAGE;
     // GLPI ranges are inclusive: "0-4" returns 5 rows.
-    return this.fetchPage<T>(itemtype, options, start, start + Math.max(1, limit) - 1);
+    return this.fetchPage<T>(validItemtype, options, start, start + Math.max(1, limit) - 1);
   }
 
   /**
@@ -92,7 +94,8 @@ export class GlpiSearch {
     itemtype: string,
     criteria: SearchCriterion[] = []
   ): Promise<number> {
-    const res = await this.fetchPage(itemtype, { criteria }, 0, 0);
+    const validItemtype = validateItemtype(itemtype);
+    const res = await this.fetchPage(validItemtype, { criteria }, 0, 0);
     return res.totalcount;
   }
 

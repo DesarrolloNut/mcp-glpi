@@ -26,48 +26,30 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { readFile } from 'node:fs/promises';
-import { basename, extname } from 'node:path';
 import { z } from 'zod';
 import { GlpiClient, GlpiConfig, ListOptions } from './glpi-client.js';
 import { GlpiError } from './http.js';
 import { SearchCriterion, SearchType, SearchLink } from './search.js';
-
-// ---------------------------------------------------------------------------
-// Validation Schemas
-// ---------------------------------------------------------------------------
-
-const listArgsSchema = z.object({
-  start: z.number().int().min(0).optional(),
-  limit: z.number().int().min(1).max(10000).optional(),
-  range: z.string().optional(),
-  sort: z.string().optional(),
-  order: z.enum(['ASC', 'DESC']).optional(),
-  expand_dropdowns: z.boolean().optional(),
-  criteria: z.array(z.unknown()).optional(),
-  fetch_all: z.boolean().optional(),
-}).passthrough();
-
-const ticketReadSchema = z.object({
-  id: z.number().int().min(1),
-  with_logs: z.boolean().optional(),
-}).passthrough();
-
-const ticketSearchSchema = z.object({
-  status: z.number().optional(),
-  assigned_user_id: z.number().optional(),
-  assigned_group_id: z.number().optional(),
-  requester_user_id: z.number().optional(),
-  category_id: z.number().optional(),
-  entity_id: z.number().optional(),
-  priority: z.number().optional(),
-  urgency: z.number().optional(),
-  date_from: z.string().optional(),
-  date_to: z.string().optional(),
-  text_search: z.string().optional(),
-  open_only: z.boolean().optional(),
-  start: z.number().int().min(0).optional(),
-  limit: z.number().int().min(1).max(10000).optional(),
-}).passthrough();
+import { parseGlpiConfig } from './config.js';
+import { resolveSafePath, ALLOWED_UPLOAD_MIME_TYPES } from './path-security.js';
+import { validateItemtype } from './itemtype-security.js';
+import {
+  listArgsSchema,
+  ticketReadSchema,
+  ticketSearchSchema,
+  ticketCreateSchema,
+  ticketUpdateSchema,
+  ticketDeleteSchema,
+  followupCreateSchema,
+  taskCreateSchema,
+  solutionCreateSchema,
+  ticketAssignSchema,
+  linkTicketsSchema,
+  uploadDocumentSchema,
+  attachDocumentSchema,
+  ticketValidationSchema,
+  setValidationStatusSchema,
+} from './schemas.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -129,41 +111,8 @@ const TICKET_FIELDS = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function envInt(name: string): number | undefined {
-  const raw = process.env[name];
-  if (!raw) return undefined;
-  const n = parseInt(raw, 10);
-  if (isNaN(n) || n < 0) throw new Error(`${name} must be a non-negative integer, got "${raw}"`);
-  return n;
-}
-
 function getConfig(): GlpiConfig {
-  const url = process.env.GLPI_URL;
-  if (!url) throw new Error('GLPI_URL environment variable is required');
-  try {
-    new URL(url);
-  } catch {
-    throw new Error(`GLPI_URL is not a valid URL: "${url}"`);
-  }
-
-  const userToken = process.env.GLPI_USER_TOKEN;
-  const username = process.env.GLPI_USERNAME;
-  const password = process.env.GLPI_PASSWORD;
-  if (!userToken && !(username && password)) {
-    throw new Error(
-      'No authentication configured. Set GLPI_USER_TOKEN, or GLPI_USERNAME + GLPI_PASSWORD.'
-    );
-  }
-
-  return {
-    url,
-    appToken: process.env.GLPI_APP_TOKEN,
-    userToken,
-    username,
-    password,
-    timeoutMs: envInt('GLPI_TIMEOUT_MS'),
-    maxRetries: envInt('GLPI_MAX_RETRIES'),
-  };
+  return parseGlpiConfig(process.env);
 }
 
 /**
@@ -264,18 +213,7 @@ const LIST_TOOL_COMMON_PROPS = {
 };
 
 /** MIME types for glpi_upload_document, keyed by lowercase file extension. */
-const UPLOAD_MIME_TYPES: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.pdf': 'application/pdf',
-  '.txt': 'text/plain',
-  '.log': 'text/plain',
-  '.csv': 'text/csv',
-  '.zip': 'application/zip',
-};
+const UPLOAD_MIME_TYPES = ALLOWED_UPLOAD_MIME_TYPES;
 
 // ---------------------------------------------------------------------------
 // Tool safety annotations (MCP ToolAnnotations)
@@ -1236,20 +1174,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ==== TICKETS — write ====
       case 'glpi_create_ticket': {
-        const name = args.name as string;
-        const content = args.content as string;
-        if (!name || !content) throw new McpError(ErrorCode.InvalidParams, 'name and content required');
+        const validated = ticketCreateSchema.parse(args);
         const result = await client.createTicket({
-          name,
-          content,
-          urgency: (args.urgency as number) ?? 3,
-          impact: args.impact as number,
-          priority: args.priority as number,
-          type: (args.type as number) ?? 1,
-          itilcategories_id: args.category_id as number,
-          entities_id: args.entity_id as number,
-          _users_id_assign: args.user_id_assign as number,
-          _groups_id_assign: args.group_id_assign as number,
+          name: validated.name,
+          content: validated.content,
+          urgency: validated.urgency ?? 3,
+          impact: (args.impact as number) ?? validated.urgency ?? 3,
+          priority: validated.priority,
+          type: validated.type ?? 1,
+          itilcategories_id: validated.itilcategories_id ?? (args.category_id as number),
+          entities_id: validated.entities_id ?? (args.entity_id as number),
+          _users_id_assign: validated.users_id_assign ?? (args.user_id_assign as number),
+          _groups_id_assign: validated.groups_id_assign ?? (args.group_id_assign as number),
           _users_id_requester: args.requester_user_id as number,
           _groups_id_requester: args.requester_group_id as number,
           time_to_resolve: args.time_to_resolve as string,
@@ -1258,138 +1194,109 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'glpi_update_ticket': {
-        const id = args.id as number;
-        if (!id) throw new McpError(ErrorCode.InvalidParams, 'id required');
+        const validated = ticketUpdateSchema.parse(args);
         const updates: Record<string, unknown> = {};
         ['name', 'content', 'status', 'urgency', 'priority', 'impact', 'itilcategories_id'].forEach((k) => {
           if (args[k] !== undefined) updates[k] = args[k];
         });
-        await client.updateTicket(id, updates as any);
-        return text({ success: true, id });
+        await client.updateTicket(validated.id, updates as any);
+        return text({ success: true, id: validated.id });
       }
 
       case 'glpi_delete_ticket': {
-        const id = args.id as number;
-        if (!id) throw new McpError(ErrorCode.InvalidParams, 'id required');
-        await client.deleteTicket(id, args.force as boolean);
-        return text({ success: true, id, purged: !!args.force });
+        const validated = ticketDeleteSchema.parse(args);
+        await client.deleteTicket(validated.id, validated.force);
+        return text({ success: true, id: validated.id, purged: !!validated.force });
       }
 
       case 'glpi_add_followup': {
-        const ticket_id = args.ticket_id as number;
-        const content = args.content as string;
-        if (!ticket_id || !content) throw new McpError(ErrorCode.InvalidParams, 'ticket_id and content required');
-        const result = await client.addTicketFollowup(ticket_id, content, args.is_private as boolean);
+        const validated = followupCreateSchema.parse(args);
+        const result = await client.addTicketFollowup(validated.ticket_id, validated.content, validated.is_private);
         return text({ success: true, followup_id: result.id });
       }
 
       case 'glpi_add_task': {
-        const ticket_id = args.ticket_id as number;
-        const content = args.content as string;
-        if (!ticket_id || !content) throw new McpError(ErrorCode.InvalidParams, 'ticket_id and content required');
-        const result = await client.addTicketTask(ticket_id, content, {
-          is_private: args.is_private as boolean,
-          actiontime: args.actiontime as number,
-          state: args.state as number,
-          users_id_tech: args.users_id_tech as number,
-          groups_id_tech: args.groups_id_tech as number,
+        const validated = taskCreateSchema.parse(args);
+        const result = await client.addTicketTask(validated.ticket_id, validated.content, {
+          is_private: validated.is_private,
+          actiontime: validated.actiontime,
+          state: validated.state,
+          users_id_tech: validated.users_id_tech,
+          groups_id_tech: validated.groups_id_tech,
         });
         return text({ success: true, task_id: result.id });
       }
 
       case 'glpi_add_solution': {
-        const ticket_id = args.ticket_id as number;
-        const content = args.content as string;
-        if (!ticket_id || !content) throw new McpError(ErrorCode.InvalidParams, 'ticket_id and content required');
-        const result = await client.addTicketSolution(ticket_id, content, args.solutiontypes_id as number);
+        const validated = solutionCreateSchema.parse(args);
+        const result = await client.addTicketSolution(validated.ticket_id, validated.content, validated.solutiontypes_id);
         return text({ success: true, solution_id: result.id });
       }
 
       case 'glpi_assign_ticket': {
-        const ticket_id = args.ticket_id as number;
-        if (!ticket_id) throw new McpError(ErrorCode.InvalidParams, 'ticket_id required');
-        const user_id = args.user_id as number;
-        const group_id = args.group_id as number;
-        if (!user_id && !group_id) {
-          throw new McpError(ErrorCode.InvalidParams, 'user_id or group_id required');
-        }
-        const result = await client.assignTicket(ticket_id, {
-          users_id: user_id,
-          groups_id: group_id,
-          type: args.type as number,
+        const validated = ticketAssignSchema.parse(args);
+        const result = await client.assignTicket(validated.ticket_id, {
+          users_id: validated.user_id,
+          groups_id: validated.group_id,
+          type: validated.type,
         });
         return text({ success: true, assignment_id: result.id });
       }
 
       case 'glpi_link_tickets': {
-        const parent_id = args.parent_id as number;
-        const child_id = args.child_id as number;
-        if (!parent_id || !child_id) throw new McpError(ErrorCode.InvalidParams, 'parent_id and child_id required');
-        const result = await client.linkTickets(parent_id, child_id, (args.link_type as number) ?? 1);
+        const validated = linkTicketsSchema.parse(args);
+        const result = await client.linkTickets(validated.parent_id, validated.child_id, validated.link_type);
         return text({ success: true, link_id: result.id });
       }
 
       case 'glpi_add_ticket_validation': {
-        const ticket_id = args.ticket_id as number;
-        const users_id_validate = args.users_id_validate as number;
-        if (!ticket_id || !users_id_validate) {
-          throw new McpError(ErrorCode.InvalidParams, 'ticket_id and users_id_validate required');
-        }
-        const result = await client.addTicketValidation(ticket_id, {
-          users_id_validate,
-          comment_submission: args.comment_submission as string,
+        const validated = ticketValidationSchema.parse(args);
+        const result = await client.addTicketValidation(validated.ticket_id, {
+          users_id_validate: validated.users_id_validate,
+          comment_submission: validated.comment_submission,
         });
         return text({ success: true, validation_id: result.id });
       }
 
       case 'glpi_set_validation_status': {
-        const validation_id = args.validation_id as number;
-        const status = args.status as 2 | 3;
-        if (!validation_id || (status !== 2 && status !== 3)) {
-          throw new McpError(ErrorCode.InvalidParams, 'validation_id and status (2 or 3) required');
-        }
+        const validated = setValidationStatusSchema.parse(args);
         await client.setTicketValidationStatus(
-          validation_id,
-          status,
-          args.comment_validation as string
+          validated.validation_id,
+          validated.status,
+          validated.comment_validation
         );
-        return text({ success: true, validation_id, status_label: VALIDATION_STATUS[status] });
+        return text({ success: true, validation_id: validated.validation_id, status_label: VALIDATION_STATUS[validated.status] });
       }
 
       case 'glpi_upload_document': {
-        const filePath = args.file_path as string;
-        if (!filePath) throw new McpError(ErrorCode.InvalidParams, 'file_path required');
+        const validated = uploadDocumentSchema.parse(args);
+        const safeFile = await resolveSafePath(validated.file_path);
         let data: Uint8Array;
         try {
-          data = await readFile(filePath);
+          data = await readFile(safeFile.resolvedPath);
         } catch (err) {
           throw new McpError(
             ErrorCode.InvalidParams,
-            `cannot read file "${filePath}": ${err instanceof Error ? err.message : err}`
+            `cannot read file "${validated.file_path}": ${err instanceof Error ? err.message : err}`
           );
         }
-        const filename = basename(filePath);
-        const ticket_id = args.ticket_id as number | undefined;
-        // Linking via the manifest (itemtype/items_id) lets GLPI create the
-        // Document_Item itself, which also works for restricted profiles that
-        // cannot POST Document_Item directly.
         const document = await client.uploadDocument({
-          filename,
+          filename: safeFile.filename,
           data,
-          name: args.name as string | undefined,
-          mimeType: UPLOAD_MIME_TYPES[extname(filename).toLowerCase()],
-          ...(ticket_id ? { itemtype: 'Ticket', items_id: ticket_id } : {}),
+          name: validated.name,
+          mimeType: safeFile.mimeType,
+          ...(validated.ticket_id ? { itemtype: 'Ticket', items_id: validated.ticket_id } : {}),
         });
-        return text({ success: true, document_id: document.id, ...(ticket_id ? { ticket_id } : {}) });
+        return text({
+          success: true,
+          document_id: document.id,
+          ...(validated.ticket_id ? { ticket_id: validated.ticket_id } : {}),
+        });
       }
 
       case 'glpi_attach_document_to_ticket': {
-        const ticket_id = args.ticket_id as number;
-        const document_id = args.document_id as number;
-        if (!ticket_id || !document_id) {
-          throw new McpError(ErrorCode.InvalidParams, 'ticket_id and document_id required');
-        }
-        const result = await client.attachDocumentToTicket(ticket_id, document_id);
+        const validated = attachDocumentSchema.parse(args);
+        const result = await client.attachDocumentToTicket(validated.ticket_id, validated.document_id);
         return text({ success: true, link_id: result.id });
       }
 
@@ -1762,8 +1669,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ==== SEARCH ====
       case 'glpi_search_v2': {
-        const itemtype = args.itemtype as string;
-        if (!itemtype) throw new McpError(ErrorCode.InvalidParams, 'itemtype required');
+        const rawItemtype = args.itemtype as string;
+        if (!rawItemtype) throw new McpError(ErrorCode.InvalidParams, 'itemtype required');
+        const itemtype = validateItemtype(rawItemtype);
         const rawCriteria = (args.criteria as CriteriaArg[]) ?? [];
         const criteria = await resolveCriteria(client, itemtype, rawCriteria);
         const result = await client.search.search(itemtype, {
@@ -1781,8 +1689,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'glpi_count': {
-        const itemtype = args.itemtype as string;
-        if (!itemtype) throw new McpError(ErrorCode.InvalidParams, 'itemtype required');
+        const rawItemtype = args.itemtype as string;
+        if (!rawItemtype) throw new McpError(ErrorCode.InvalidParams, 'itemtype required');
+        const itemtype = validateItemtype(rawItemtype);
         const rawCriteria = (args.criteria as CriteriaArg[]) ?? [];
         const criteria = await resolveCriteria(client, itemtype, rawCriteria);
         const totalcount = await client.search.count(itemtype, criteria);
@@ -1790,8 +1699,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'glpi_list_search_options': {
-        const itemtype = args.itemtype as string;
-        if (!itemtype) throw new McpError(ErrorCode.InvalidParams, 'itemtype required');
+        const rawItemtype = args.itemtype as string;
+        if (!rawItemtype) throw new McpError(ErrorCode.InvalidParams, 'itemtype required');
+        const itemtype = validateItemtype(rawItemtype);
         const cat = await client.searchOptions.get(itemtype);
         const entries = Array.from(cat.byId.values()).map((o) => ({
           id: o.id, name: o.name, uid: o.uid, table: o.table,
@@ -1803,13 +1713,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // legacy
       case 'glpi_search': {
-        const itemtype = args.itemtype as string;
+        const rawItemtype = args.itemtype as string;
         const field = args.field as number;
         const searchtype = args.searchtype as SearchType;
         const value = args.value as string;
-        if (!itemtype || field === undefined || !searchtype || value === undefined) {
+        if (!rawItemtype || field === undefined || !searchtype || value === undefined) {
           throw new McpError(ErrorCode.InvalidParams, 'itemtype, field, searchtype, value required');
         }
+        const itemtype = validateItemtype(rawItemtype);
         const result = await client.search.search(itemtype, {
           criteria: [{ field, searchtype, value }],
           expandDropdowns: true,

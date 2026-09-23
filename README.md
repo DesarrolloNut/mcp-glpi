@@ -28,16 +28,25 @@ README documents what's exposed today.
 
 | Env var | Required | Description |
 |---|---|---|
-| `GLPI_URL` | yes | Base URL of the GLPI instance |
+| `GLPI_URL` | yes | Base URL of the GLPI instance (HTTPS required by default) |
 | `GLPI_APP_TOKEN` | no | Application token (Setup → General → API) |
 | `GLPI_USER_TOKEN` | no\* | User API token |
 | `GLPI_USERNAME` | no\* | Login (when not using user token) |
 | `GLPI_PASSWORD` | no\* | Password (when not using user token) |
 | `GLPI_TIMEOUT_MS` | no | HTTP request timeout in ms (default `15000`) |
 | `GLPI_MAX_RETRIES` | no | Max retries on 5xx / 429 / network errors (default `2`) |
+| `GLPI_ALLOWED_UPLOAD_DIR` | no | Sandbox root path for `glpi_upload_document` (default: project working directory) |
+| `GLPI_ALLOW_HTTP` | no | Set to `true` to allow unencrypted `http://` URLs for local testing |
 | `GLPI_DEBUG` | no | Set to any value to log HTTP retries/re-auth to stderr |
 
 \* either `GLPI_USER_TOKEN` or `GLPI_USERNAME`+`GLPI_PASSWORD` is required.
+
+### Security & Hardening
+
+1. **Encrypted Transport (HTTPS Enforced):** `GLPI_URL` must use `https://` to protect tokens and credentials in transit. Unencrypted `http://` connections are blocked by default and require `GLPI_ALLOW_HTTP=true`.
+2. **File Upload Sandboxing (`glpi_upload_document`):** File uploads are restricted to `GLPI_ALLOWED_UPLOAD_DIR` (or working directory). Path traversal (`../`), symlink escapes, hidden files, sensitive credentials (`.env`, SSH keys), and unauthorized file extensions are strictly blocked.
+3. **Itemtype Sanitization:** Entity and object type arguments are strictly validated against `/^[a-zA-Z0-9_]+$/` to prevent path traversal and endpoint tampering.
+4. **Zod Strict Schemas:** All mutations and input parameters are validated against strict Zod schemas with defined boundaries.
 
 ### Claude Desktop / Claude Code
 

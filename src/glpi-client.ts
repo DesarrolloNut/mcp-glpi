@@ -17,6 +17,7 @@
 import { GlpiHttp, GlpiHttpConfig } from './http.js';
 import { GlpiSearch, SearchCriterion } from './search.js';
 import { SearchOptionsCache } from './search-options.js';
+import { validateItemtype } from './itemtype-security.js';
 
 // ============================================================================
 // CONFIG / INTERFACES
@@ -441,20 +442,22 @@ export class GlpiClient {
   }
 
   async getItems<T>(itemtype: string, options: ListOptions = {}): Promise<T[]> {
+    const validItemtype = validateItemtype(itemtype);
     const params = new URLSearchParams(this.toQuery(options));
     if (options.searchText) {
       for (const [k, v] of Object.entries(options.searchText)) {
         params.append(`searchText[${k}]`, v);
       }
     }
-    const { data } = await this.http.request<T[]>(itemtype, { query: params });
+    const { data } = await this.http.request<T[]>(validItemtype, { query: params });
     return data ?? [];
   }
 
   async getItem<T>(itemtype: string, id: number, options: GetOptions = {}): Promise<T> {
+    const validItemtype = validateItemtype(itemtype);
     // Default expand_dropdowns=true on detail views for human-readable output.
     const opts = { expand_dropdowns: true, ...options };
-    const { data } = await this.http.request<T>(`${itemtype}/${id}`, {
+    const { data } = await this.http.request<T>(`${validItemtype}/${id}`, {
       query: this.toQuery(opts),
     });
     return data;
@@ -464,8 +467,9 @@ export class GlpiClient {
     itemtype: string,
     payload: Record<string, unknown>
   ): Promise<{ id: number; message?: string }> {
+    const validItemtype = validateItemtype(itemtype);
     const { data } = await this.http.request<{ id: number; message?: string } | Array<{ id: number; message?: string }>>(
-      itemtype,
+      validItemtype,
       { method: 'POST', json: { input: payload } }
     );
     return Array.isArray(data) ? data[0] : data;
@@ -476,7 +480,8 @@ export class GlpiClient {
     id: number,
     payload: Record<string, unknown>
   ): Promise<boolean> {
-    await this.http.request(`${itemtype}/${id}`, {
+    const validItemtype = validateItemtype(itemtype);
+    await this.http.request(`${validItemtype}/${id}`, {
       method: 'PUT',
       json: { input: payload },
     });
@@ -489,10 +494,11 @@ export class GlpiClient {
     force: boolean = false,
     history: boolean = true
   ): Promise<boolean> {
+    const validItemtype = validateItemtype(itemtype);
     const params = new URLSearchParams();
     if (force) params.append('force_purge', '1');
     if (!history) params.append('history', '0');
-    await this.http.request(`${itemtype}/${id}`, { method: 'DELETE', query: params });
+    await this.http.request(`${validItemtype}/${id}`, { method: 'DELETE', query: params });
     return true;
   }
 
@@ -1051,11 +1057,12 @@ export class GlpiClient {
     items_id?: number;
   }): Promise<{ id: number }> {
     const { filename, data, name, mimeType, itemtype, items_id } = options;
+    const validItemtype = itemtype ? validateItemtype(itemtype) : undefined;
     const manifest = JSON.stringify({
       input: {
         name: name ?? filename,
         _filename: [filename],
-        ...(itemtype && items_id ? { itemtype, items_id } : {}),
+        ...(validItemtype && items_id ? { itemtype: validItemtype, items_id } : {}),
       },
     });
     const form = new FormData();
