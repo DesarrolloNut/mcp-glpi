@@ -88,6 +88,82 @@ export class SearchOptionsCache {
     return direct?.id;
   }
 
+  /**
+   * Normalize a single search result row by translating numeric field IDs to canonical field names.
+   */
+  async normalizeRow(
+    itemtype: string,
+    rawRow: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const cat = await this.get(itemtype);
+    return this.normalizeRowWithCatalogue(cat, rawRow);
+  }
+
+  /**
+   * Normalize multiple search result rows using the cached catalogue for the itemtype.
+   */
+  async normalizeRows(
+    itemtype: string,
+    rows: Record<string, unknown>[]
+  ): Promise<Record<string, unknown>[]> {
+    if (!rows || rows.length === 0) return [];
+    const cat = await this.get(itemtype);
+    return rows.map((r) => this.normalizeRowWithCatalogue(cat, r));
+  }
+
+  /**
+   * Internal helper to normalize a row given an already fetched catalogue.
+   */
+  normalizeRowWithCatalogue(
+    cat: SearchOptionsCatalogue,
+    rawRow: Record<string, unknown>
+  ): Record<string, unknown> {
+    const normalized: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(rawRow)) {
+      const fieldId = parseInt(key, 10);
+      if (Number.isNaN(fieldId)) {
+        // Already a named property (not numeric search-option ID)
+        normalized[key] = value;
+        continue;
+      }
+
+      const opt = cat.byId.get(fieldId);
+      if (!opt) {
+        normalized[key] = value;
+        continue;
+      }
+
+      const canonicalField = opt.field?.toLowerCase();
+      const isDirectOwnTable = opt.uid === `${cat.itemtype}.${opt.field}`;
+
+      let propName: string;
+      if (canonicalField && isDirectOwnTable && !(canonicalField in normalized)) {
+        propName = canonicalField;
+      } else if (canonicalField && !(canonicalField in normalized)) {
+        propName = canonicalField;
+      } else {
+        const cleanName = opt.name
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+        if (cleanName && !(cleanName in normalized)) {
+          propName = cleanName;
+        } else if (canonicalField) {
+          propName = `${canonicalField}_${fieldId}`;
+        } else {
+          propName = `field_${fieldId}`;
+        }
+      }
+
+      normalized[propName] = value;
+    }
+
+    return normalized;
+  }
+
   private parse(itemtype: string, data: Record<string, unknown>): SearchOptionsCatalogue {
     const byId = new Map<number, SearchOption>();
     const byUid = new Map<string, SearchOption>();

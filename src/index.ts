@@ -97,6 +97,7 @@ const TICKET_FIELDS = {
   date_mod: 19,
   solvedate: 17,
   closedate: 16,
+  time_to_resolve: 18,
   priority: 3,
   urgency: 10,
   impact: 11,
@@ -295,10 +296,34 @@ export const ALL_TOOLS = [
           entity_id: { type: 'number', description: 'ID de la entidad' },
           priority: { type: 'number', description: 'Prioridad: 1=Muy baja .. 5=Muy alta' },
           urgency: { type: 'number', description: 'Urgencia: 1=Muy baja .. 5=Muy alta' },
-          date_from: { type: 'string', description: 'Fecha inicial (formato AAAA-MM-DD HH:MM:SS)' },
-          date_to: { type: 'string', description: 'Fecha final (formato AAAA-MM-DD HH:MM:SS)' },
+          date_field: {
+            type: 'string',
+            description: 'Campo de fecha a filtrar: "date" (apertura/creación), "date_mod" (modificación), "solvedate" (resolución), "closedate" (cierre), "time_to_resolve" (vencimiento SLA). Por defecto "date".',
+          },
+          date_from: { type: 'string', description: 'Fecha inicial dada desde el exterior (formato AAAA-MM-DD HH:MM:SS o AAAA-MM-DD)' },
+          date_to: { type: 'string', description: 'Fecha final dada desde el exterior (formato AAAA-MM-DD HH:MM:SS o AAAA-MM-DD)' },
           text_search: { type: 'string', description: 'Texto libre a buscar en el título' },
           open_only: { type: 'boolean', description: 'Solo tickets abiertos (estado < 5)' },
+          additional_criteria: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                field: { description: 'ID de campo o nombre amigable (ej. status, priority, itilcategories_id, etc.)' },
+                searchtype: { type: 'string', description: 'Tipo de búsqueda: contains, equals, notequals, lessthan, morethan, under' },
+                value: { description: 'Valor a comparar' },
+                link: { type: 'string', enum: ['AND', 'OR', 'AND NOT', 'OR NOT'], description: 'Operador lógico' },
+              },
+              required: ['field', 'searchtype', 'value'],
+            },
+            description: 'Criterios dinámicos adicionales para combinar con los filtros estándar.',
+          },
+          forcedisplay: {
+            type: 'array',
+            items: { description: 'ID numérico o nombre amigable del campo a mostrar' },
+            description: 'Campos adicionales a incluir en el resultado.',
+          },
+          raw_output: { type: 'boolean', description: 'Si es true, devuelve las claves numéricas originales de GLPI sin normalizar a nombres legibles.' },
           start: { type: 'number', description: 'Desplazamiento inicial / offset' },
           limit: { type: 'number', description: 'Cantidad máxima de resultados' },
           fetch_all: { type: 'boolean', description: 'Paginar hasta obtener todos los resultados; limitado por max_rows (por defecto 1000)' },
@@ -1122,10 +1147,31 @@ export async function executeTool(name: string, args: Record<string, unknown>) {
       case 'glpi_list_tickets': {
         const validated = listArgsSchema.parse(args);
         const opts = parseListArgs(validated);
-        let tickets = await client.getTickets({ ...opts, order: opts.order ?? 'DESC' });
         if (typeof validated.status === 'number') {
-          tickets = tickets.filter((t: any) => t.status === validated.status);
+          // Use GLPI Search Engine for reliable server-side status filtering
+          const result = await client.search.search('Ticket', {
+            criteria: [{ field: TICKET_FIELDS.status, searchtype: 'equals', value: validated.status }],
+            forcedisplay: [
+              TICKET_FIELDS.id,
+              TICKET_FIELDS.name,
+              TICKET_FIELDS.status,
+              TICKET_FIELDS.date,
+              TICKET_FIELDS.date_mod,
+              TICKET_FIELDS.priority,
+              TICKET_FIELDS.urgency,
+              TICKET_FIELDS.category,
+              TICKET_FIELDS.entity,
+            ],
+            start: opts.range ? parseInt(opts.range.split('-')[0], 10) : ((args.start as number) ?? 0),
+            limit: args.limit as number,
+            sort: opts.sort ?? TICKET_FIELDS.id,
+            order: opts.order ?? 'DESC',
+            expandDropdowns: true,
+          });
+          const normalized = await client.searchOptions.normalizeRows('Ticket', result.data);
+          return text(normalized);
         }
+        const tickets = await client.getTickets({ ...opts, order: opts.order ?? 'DESC' });
         return text(tickets.map(formatTicketSummary));
       }
 
@@ -1189,13 +1235,63 @@ export async function executeTool(name: string, args: Record<string, unknown>) {
         if (args.entity_id !== undefined) push({ field: TICKET_FIELDS.entity, searchtype: 'equals', value: args.entity_id as number });
         if (args.priority !== undefined) push({ field: TICKET_FIELDS.priority, searchtype: 'equals', value: args.priority as number });
         if (args.urgency !== undefined) push({ field: TICKET_FIELDS.urgency, searchtype: 'equals', value: args.urgency as number });
-        if (args.date_from) push({ field: TICKET_FIELDS.date, searchtype: 'morethan', value: args.date_from as string });
-        if (args.date_to) push({ field: TICKET_FIELDS.date, searchtype: 'lessthan', value: args.date_to as string });
+
+        // Resolve date field dynamically (supports date, date_mod, solvedate, closedate, time_to_resolve)
+        let dateField = TICKET_FIELDS.date;
+        if (args.date_field) {
+          const rawDateField = String(args.date_field).toLowerCase();
+          const resolved = (TICKET_FIELDS as Record<string, number>)[rawDateField] ??
+            (await client.searchOptions.resolveField('Ticket', rawDateField));
+          if (resolved !== undefined) dateField = resolved;
+        }
+
+        // Exact date bounds provided externally
+        if (args.date_from) push({ field: dateField, searchtype: 'morethan', value: args.date_from as string });
+        if (args.date_to) push({ field: dateField, searchtype: 'lessthan', value: args.date_to as string });
         if (args.text_search) push({ field: TICKET_FIELDS.name, searchtype: 'contains', value: args.text_search as string });
         if (args.open_only) push({ field: TICKET_FIELDS.status, searchtype: 'lessthan', value: 5 });
 
+        // Dynamic additional criteria
+        if (Array.isArray(args.additional_criteria)) {
+          const resolvedAdditional = await resolveCriteria(client, 'Ticket', args.additional_criteria as CriteriaArg[]);
+          for (const ac of resolvedAdditional) {
+            push(ac);
+          }
+        }
+
+        // Resolve forcedisplay fields or use comprehensive ticket defaults
+        let forcedisplay: number[] | undefined;
+        if (Array.isArray(args.forcedisplay)) {
+          forcedisplay = (
+            await Promise.all(
+              (args.forcedisplay as Array<number | string>).map(async (f) =>
+                typeof f === 'number' ? f : await client.searchOptions.resolveField('Ticket', f)
+              )
+            )
+          ).filter((f): f is number => typeof f === 'number');
+        } else {
+          forcedisplay = [
+            TICKET_FIELDS.id,
+            TICKET_FIELDS.name,
+            TICKET_FIELDS.status,
+            TICKET_FIELDS.date,
+            TICKET_FIELDS.date_mod,
+            TICKET_FIELDS.priority,
+            TICKET_FIELDS.urgency,
+            TICKET_FIELDS.impact,
+            TICKET_FIELDS.category,
+            TICKET_FIELDS.entity,
+            TICKET_FIELDS.requester_user,
+            TICKET_FIELDS.technician_user,
+            TICKET_FIELDS.solvedate,
+            TICKET_FIELDS.closedate,
+            TICKET_FIELDS.time_to_resolve,
+          ];
+        }
+
         const result = await client.search.search('Ticket', {
           criteria,
+          forcedisplay,
           start: (args.start as number) ?? 0,
           limit: (args.limit as number) ?? 50,
           fetchAll: args.fetch_all as boolean,
@@ -1205,10 +1301,15 @@ export async function executeTool(name: string, args: Record<string, unknown>) {
           expandDropdowns: true,
         });
 
+        // Normalize numeric search-option keys into friendly field names
+        const outputData = args.raw_output
+          ? result.data
+          : await client.searchOptions.normalizeRows('Ticket', result.data);
+
         return text({
           totalcount: result.totalcount,
           count: result.count,
-          data: result.data,
+          data: outputData,
         });
       }
 
@@ -1740,9 +1841,20 @@ export async function executeTool(name: string, args: Record<string, unknown>) {
         const itemtype = validateItemtype(rawItemtype);
         const rawCriteria = (args.criteria as CriteriaArg[]) ?? [];
         const criteria = await resolveCriteria(client, itemtype, rawCriteria);
+        let forcedisplay: number[] | undefined;
+        if (Array.isArray(args.forcedisplay)) {
+          forcedisplay = (
+            await Promise.all(
+              (args.forcedisplay as Array<number | string>).map(async (f) =>
+                typeof f === 'number' ? f : await client.searchOptions.resolveField(itemtype, f)
+              )
+            )
+          ).filter((f): f is number => typeof f === 'number');
+        }
+
         const result = await client.search.search(itemtype, {
           criteria,
-          forcedisplay: args.forcedisplay as number[],
+          forcedisplay,
           start: args.start as number,
           limit: args.limit as number,
           sort: args.sort as number,
@@ -1751,7 +1863,15 @@ export async function executeTool(name: string, args: Record<string, unknown>) {
           maxRows: args.max_rows as number,
           expandDropdowns: args.expand_dropdowns !== false,
         });
-        return text(result);
+
+        const outputData = args.raw_output
+          ? result.data
+          : await client.searchOptions.normalizeRows(itemtype, result.data);
+
+        return text({
+          ...result,
+          data: outputData,
+        });
       }
 
       case 'glpi_count': {

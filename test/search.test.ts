@@ -104,3 +104,42 @@ test('resolveField prefers the own-table option on column-name collisions', asyn
   // glpi_users via the requester join (id 4). The own-table one must win.
   assert.equal(await cache.resolveField('Ticket', 'name'), 1);
 });
+
+test('normalizeRow translates numeric search option IDs to canonical field names', async () => {
+  installCatalogueFetch();
+  const cache = new SearchOptionsCache(authedHttp());
+
+  const rawRow = {
+    '1': 'Imprimante en panne',
+    '2': 42,
+    '12': 'Nouveau',
+    '4': 'Jean Dupont',
+    custom_field: 'unaltered',
+  };
+
+  const normalized = await cache.normalizeRow('Ticket', rawRow);
+
+  assert.deepEqual(normalized, {
+    name: 'Imprimante en panne',
+    id: 42,
+    status: 'Nouveau',
+    demandeur: 'Jean Dupont',
+    custom_field: 'unaltered',
+  });
+});
+
+test('normalizeRows translates an array of search result rows', async () => {
+  installCatalogueFetch();
+  const cache = new SearchOptionsCache(authedHttp());
+
+  const rows = [
+    { '1': 'Panne réseau', '2': 101, '12': 'En cours' },
+    { '1': 'Demande écran', '2': 102, '12': 'Résolu' },
+  ];
+
+  const normalized = await cache.normalizeRows('Ticket', rows);
+
+  assert.equal(normalized.length, 2);
+  assert.deepEqual(normalized[0], { name: 'Panne réseau', id: 101, status: 'En cours' });
+  assert.deepEqual(normalized[1], { name: 'Demande écran', id: 102, status: 'Résolu' });
+});

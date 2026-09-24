@@ -25,12 +25,23 @@ export const ticketSearchSchema = z.object({
   entity_id: z.number().int().min(0).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   urgency: z.number().int().min(1).max(5).optional(),
+  date_field: z.string().optional(),
   date_from: z.string().optional(),
   date_to: z.string().optional(),
   text_search: z.string().max(500).optional(),
   open_only: z.boolean().optional(),
   start: z.number().int().min(0).optional(),
   limit: z.number().int().min(1).max(10000).optional(),
+  additional_criteria: z.array(
+    z.object({
+      field: z.union([z.string(), z.number()]),
+      searchtype: z.string(),
+      value: z.union([z.string(), z.number(), z.boolean()]),
+      link: z.string().optional(),
+    })
+  ).optional(),
+  forcedisplay: z.array(z.union([z.number(), z.string()])).optional(),
+  raw_output: z.boolean().optional(),
 }).passthrough();
 
 export const ticketCreateSchema = z.object({
